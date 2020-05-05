@@ -31,6 +31,7 @@ import org.h2.build.doc.XMLParser;
  */
 public class Build extends BuildBase {
 
+    public static final String DEPLOY_URL = "file:///home/andrey/work/m2-repo";
     private boolean filesMissing;
 
     /**
@@ -737,9 +738,122 @@ public class Build extends BuildBase {
      * file:///data/h2database/m2-repo. This is only required when
      * a new H2 version is made.
      */
-    @Description(summary = "Build H2 release jars and upload to file:///data/h2database/m2-repo.")
+    @Description(summary = "Build H2 release jars and upload to " + DEPLOY_URL + ".")
     public void mavenDeployCentral() {
         // generate and deploy h2*-sources.jar file
+        jarSources();
+        // the option -DgeneratePom=false doesn't work with some versions of
+        // Maven because of bug http://jira.codehaus.org/browse/MDEPLOY-84
+        // as a workaround we generate the pom, but overwrite it later on
+        // (that's why the regular jar is created at the very end)
+        execScript("mvn", args(
+                "deploy:deploy-file",
+                "-Dfile=docs/h2-" + getVersion() + "-sources.jar",
+                "-Durl=" + DEPLOY_URL,
+                "-Dpackaging=jar",
+                "-Dclassifier=sources",
+                "-Dversion=" + getVersion(),
+                "-DartifactId=h2",
+                "-DgroupId=com.h2database"
+                // ,"-DgeneratePom=false"
+                ));
+
+//        // generate and deploy the h2*-javadoc.jar file
+//        javadocImpl();
+//        files = files("docs/javadocImpl2");
+//        jar("docs/h2-" + getVersion() + "-javadoc.jar", files, "docs/javadocImpl2");
+//        execScript("mvn", args(
+//                "deploy:deploy-file",
+//                "-Dfile=docs/h2-" + getVersion() + "-javadoc.jar",
+//                "-Durl=" + DEPLOY_URL,
+//                "-Dpackaging=jar",
+//                "-Dclassifier=javadoc",
+//                "-Dversion=" + getVersion(),
+//                "-DartifactId=h2",
+//                "-DgroupId=com.h2database"
+//                // ,"-DgeneratePom=false"
+//                ));
+
+        // generate and deploy the h2*.jar file
+        jar();
+        String pom = new String(readFile(new File("src/installer/pom-template.xml")));
+        pom = replaceAll(pom, "@version@", getVersion());
+        writeFile(new File("bin/pom.xml"), pom.getBytes());
+        execScript("mvn", args(
+                "deploy:deploy-file",
+                "-Dfile=bin/h2" + getJarSuffix(),
+                "-Durl=" + DEPLOY_URL,
+                "-Dpackaging=jar",
+                "-Dversion=" + getVersion(),
+                "-DpomFile=bin/pom.xml",
+                "-DartifactId=h2",
+                "-DgroupId=com.h2database"));
+
+        // generate the h2-mvstore-*-sources.jar file
+        jarMVStoreSources();
+
+        // deploy the h2-mvstore-*-source.jar file
+        execScript("mvn", args(
+                "deploy:deploy-file",
+                "-Dfile=docs/h2-mvstore-" + getVersion() + "-sources.jar",
+                "-Durl=" + DEPLOY_URL,
+                "-Dpackaging=jar",
+                "-Dclassifier=sources",
+                "-Dversion=" + getVersion(),
+                "-DartifactId=h2-mvstore",
+                "-DgroupId=com.h2database"
+                // ,"-DgeneratePom=false"
+                ));
+
+//        // generate and deploy the h2-mvstore-*-javadoc.jar file
+//        javadocImpl();
+//        files = files("docs/javadocImpl3");
+//        jar("docs/h2-mvstore-" + getVersion() + "-javadoc.jar", files, "docs/javadocImpl3");
+//        execScript("mvn", args(
+//                "deploy:deploy-file",
+//                "-Dfile=docs/h2-mvstore-" + getVersion() + "-javadoc.jar",
+//                "-Durl=" + DEPLOY_URL,
+//                "-Dpackaging=jar",
+//                "-Dclassifier=javadoc",
+//                "-Dversion=" + getVersion(),
+//                "-DartifactId=h2-mvstore",
+//                "-DgroupId=com.h2database"
+//                // ,"-DgeneratePom=false"
+//                ));
+
+        // generate and deploy the h2-mvstore-*.jar file
+        jarMVStore();
+        pom = new String(readFile(new File("src/installer/pom-mvstore-template.xml")));
+        pom = replaceAll(pom, "@version@", getVersion());
+        writeFile(new File("bin/pom.xml"), pom.getBytes());
+        execScript("mvn", args(
+                "deploy:deploy-file",
+                "-Dfile=bin/h2-mvstore" + getJarSuffix(),
+                "-Durl=" + DEPLOY_URL,
+                "-Dpackaging=jar",
+                "-Dversion=" + getVersion(),
+                "-DpomFile=bin/pom.xml",
+                "-DartifactId=h2-mvstore",
+                "-DgroupId=com.h2database"));
+    }
+
+    private void jarMVStoreSources() {
+        FileList files = files("src/main");
+        copy("docs", files, "src/main");
+        files = files("docs").keep("docs/org/h2/mvstore/*").
+                exclude("docs/org/h2/mvstore/db/*").
+                keep("*.java");
+        files.addAll(files("docs").keep("docs/META-INF/*"));
+        String manifest = new String(readFile(new File(
+                "src/installer/source-manifest.mf")));
+        manifest = replaceAll(manifest, "${version}", getVersion());
+        writeFile(new File("docs/META-INF/MANIFEST.MF"), manifest.getBytes());
+        jar("docs/h2-mvstore-" + getVersion() + "-sources.jar", files, "docs");
+        delete("docs/org");
+        delete("docs/META-INF");
+    }
+
+    private void jarSources() {
         FileList files = files("src/main");
         copy("docs", files, "src/main");
         files = files("docs").keep("docs/org/*").keep("*.java");
@@ -751,110 +865,72 @@ public class Build extends BuildBase {
         jar("docs/h2-" + getVersion() + "-sources.jar", files, "docs");
         delete("docs/org");
         delete("docs/META-INF");
+    }
+
+    /**
+     * This will build a 'snapshot' H2 .jar file and upload it to the local
+     * Maven 2 repository.
+     */
+    @Description(summary = "Build a release H2 jar (and sources) and upload to local Maven 2 repo.")
+    public void mavenInstallRelease() {
+        // generate and deploy h2*-sources.jar file
+        jarSources();
         // the option -DgeneratePom=false doesn't work with some versions of
         // Maven because of bug http://jira.codehaus.org/browse/MDEPLOY-84
         // as a workaround we generate the pom, but overwrite it later on
         // (that's why the regular jar is created at the very end)
         execScript("mvn", args(
-                "deploy:deploy-file",
+                "install:install-file",
+                "-Dversion=" + getVersion(),
                 "-Dfile=docs/h2-" + getVersion() + "-sources.jar",
-                "-Durl=file:///data/h2database/m2-repo",
                 "-Dpackaging=jar",
                 "-Dclassifier=sources",
-                "-Dversion=" + getVersion(),
                 "-DartifactId=h2",
                 "-DgroupId=com.h2database"
                 // ,"-DgeneratePom=false"
-                ));
-
-        // generate and deploy the h2*-javadoc.jar file
-        javadocImpl();
-        files = files("docs/javadocImpl2");
-        jar("docs/h2-" + getVersion() + "-javadoc.jar", files, "docs/javadocImpl2");
-        execScript("mvn", args(
-                "deploy:deploy-file",
-                "-Dfile=docs/h2-" + getVersion() + "-javadoc.jar",
-                "-Durl=file:///data/h2database/m2-repo",
-                "-Dpackaging=jar",
-                "-Dclassifier=javadoc",
-                "-Dversion=" + getVersion(),
-                "-DartifactId=h2",
-                "-DgroupId=com.h2database"
-                // ,"-DgeneratePom=false"
-                ));
-
-        // generate and deploy the h2*.jar file
-        jar();
-        String pom = new String(readFile(new File("src/installer/pom-template.xml")));
-        pom = replaceAll(pom, "@version@", getVersion());
-        writeFile(new File("bin/pom.xml"), pom.getBytes());
-        execScript("mvn", args(
-                "deploy:deploy-file",
-                "-Dfile=bin/h2" + getJarSuffix(),
-                "-Durl=file:///data/h2database/m2-repo",
-                "-Dpackaging=jar",
-                "-Dversion=" + getVersion(),
-                "-DpomFile=bin/pom.xml",
-                "-DartifactId=h2",
-                "-DgroupId=com.h2database"));
+        ));
 
         // generate the h2-mvstore-*-sources.jar file
-        files = files("src/main");
-        copy("docs", files, "src/main");
-        files = files("docs").keep("docs/org/h2/mvstore/*").
-                exclude("docs/org/h2/mvstore/db/*").
-                keep("*.java");
-        files.addAll(files("docs").keep("docs/META-INF/*"));
-        manifest = new String(readFile(new File(
-                "src/installer/source-manifest.mf")));
-        manifest = replaceAll(manifest, "${version}", getVersion());
-        writeFile(new File("docs/META-INF/MANIFEST.MF"), manifest.getBytes());
-        jar("docs/h2-mvstore-" + getVersion() + "-sources.jar", files, "docs");
-        delete("docs/org");
-        delete("docs/META-INF");
+        jarMVStoreSources();
 
         // deploy the h2-mvstore-*-source.jar file
         execScript("mvn", args(
-                "deploy:deploy-file",
+                "install:install-file",
+                "-Dversion=" + getVersion(),
                 "-Dfile=docs/h2-mvstore-" + getVersion() + "-sources.jar",
-                "-Durl=file:///data/h2database/m2-repo",
                 "-Dpackaging=jar",
                 "-Dclassifier=sources",
-                "-Dversion=" + getVersion(),
                 "-DartifactId=h2-mvstore",
                 "-DgroupId=com.h2database"
                 // ,"-DgeneratePom=false"
-                ));
+        ));
 
-        // generate and deploy the h2-mvstore-*-javadoc.jar file
-        javadocImpl();
-        files = files("docs/javadocImpl3");
-        jar("docs/h2-mvstore-" + getVersion() + "-javadoc.jar", files, "docs/javadocImpl3");
-        execScript("mvn", args(
-                "deploy:deploy-file",
-                "-Dfile=docs/h2-mvstore-" + getVersion() + "-javadoc.jar",
-                "-Durl=file:///data/h2database/m2-repo",
-                "-Dpackaging=jar",
-                "-Dclassifier=javadoc",
-                "-Dversion=" + getVersion(),
-                "-DartifactId=h2-mvstore",
-                "-DgroupId=com.h2database"
-                // ,"-DgeneratePom=false"
-                ));
-
-        // generate and deploy the h2-mvstore-*.jar file
+        // MVStore
         jarMVStore();
-        pom = new String(readFile(new File("src/installer/pom-mvstore-template.xml")));
+        String pom = new String(readFile(new File("src/installer/pom-mvstore-template.xml")));
         pom = replaceAll(pom, "@version@", getVersion());
         writeFile(new File("bin/pom.xml"), pom.getBytes());
         execScript("mvn", args(
-                "deploy:deploy-file",
-                "-Dfile=bin/h2-mvstore" + getJarSuffix(),
-                "-Durl=file:///data/h2database/m2-repo",
-                "-Dpackaging=jar",
+                "install:install-file",
                 "-Dversion=" + getVersion(),
+                "-Dfile=bin/h2-mvstore" + getJarSuffix(),
+                "-Dpackaging=jar",
                 "-DpomFile=bin/pom.xml",
                 "-DartifactId=h2-mvstore",
+                "-DgroupId=com.h2database"));
+
+        // database
+        jar();
+        pom = new String(readFile(new File("src/installer/pom-template.xml")));
+        pom = replaceAll(pom, "@version@", getVersion());
+        writeFile(new File("bin/pom.xml"), pom.getBytes());
+        execScript("mvn", args(
+                "install:install-file",
+                "-Dversion=" + getVersion(),
+                "-Dfile=bin/h2" + getJarSuffix(),
+                "-Dpackaging=jar",
+                "-DpomFile=bin/pom.xml",
+                "-DartifactId=h2",
                 "-DgroupId=com.h2database"));
     }
 
